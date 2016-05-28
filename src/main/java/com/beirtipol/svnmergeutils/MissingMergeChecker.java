@@ -1,7 +1,29 @@
+/**
+ * MIT License
+ * 
+ * Copyright (c) 2016 Beirtí Ó'Nunáin
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 package com.beirtipol.svnmergeutils;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -11,7 +33,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
-import java.util.regex.Pattern;
+import java.util.function.Predicate;
 
 import javax.xml.transform.Result;
 import javax.xml.transform.Source;
@@ -25,27 +47,38 @@ import org.apache.commons.lang.StringUtils;
 import org.kohsuke.args4j.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.tmatesoft.svn.core.SVNDepth;
 import org.tmatesoft.svn.core.SVNException;
 import org.tmatesoft.svn.core.SVNLogEntry;
 import org.tmatesoft.svn.core.SVNURL;
 import org.tmatesoft.svn.core.auth.BasicAuthenticationManager;
 import org.tmatesoft.svn.core.wc.SVNClientManager;
-import org.tmatesoft.svn.core.wc.SVNRevision;
-import org.tmatesoft.svn.core.wc.xml.SVNXMLLogHandler;
 import org.tmatesoft.svn.core.wc.xml.SVNXMLSerializer;
-import org.tmatesoft.svn.core.wc2.ISvnObjectReceiver;
-import org.tmatesoft.svn.core.wc2.SvnLogMergeInfo;
-import org.tmatesoft.svn.core.wc2.SvnTarget;
-import org.xml.sax.ContentHandler;
+import org.xml.sax.SAXException;
 
 /**
  * 
- * @author Beirti
+ * @author beirtipol@gmail.com
  *
  */
-public class MissingMergeChecker extends AbstractMergeWorker {
+public class MissingMergeChecker extends AbstractWorker {
 	private static final Logger	LOGGER		= LoggerFactory.getLogger(MissingMergeChecker.class);
+
+	@Option(name = "--user", usage = "SVN Username")
+	protected String			user;
+
+	@Option(name = "--pass", usage = "SVN Password")
+	protected String			pass;
+
+	@Option(name = "--baseUrl", usage = "Common base url of 'from' and 'to'", required = true)
+	protected String			baseUrl;
+
+	@Option(name = "--mergeSources", usage = "Semicolon-delimited list of merge source paths, relative to the baseUrl. This must have the same number of paths as 'toPaths'", required = true)
+	protected String			mergeSources;
+	protected String[]			mergeSourceArray;
+
+	@Option(name = "--mergeTargets", usage = "Semicolon-delimited list of merge target paths, relative to the baseUrl. This must have the same number of paths as 'fromPaths'", required = true)
+	protected String			mergeTargets;
+	protected String[]			mergeTargetArray;
 
 	@Option(name = "--ignoreRegex", usage = "Regular expression. If the svn log entry comment matches this regex, it will not be reported.")
 	private String				ignoreRegex;
@@ -59,39 +92,40 @@ public class MissingMergeChecker extends AbstractMergeWorker {
 	@Option(name = "--outputAsHTML", usage = "Transform the output file xml to human-readable HTML.")
 	private boolean				outputAsHTML;
 
-	@Option(name = "--quietTime", usage = "Number of minutes prior to execution to ignore commits. This allows people time to merge their changes, and will help prevent unnecessary noise.")
+	@Option(name = "--quietTime", usage = "Number of seconds prior to execution to ignore commits. This allows people time to merge their changes, and will help prevent unnecessary noise.")
 	private Integer				quietTime	= 0;
 
 	public static void main(String[] args) throws Exception {
 		new MissingMergeChecker().doMain(args);
 	}
 
+	protected boolean handleArgs(String[] args) {
+		super.handleArgs(args);
+
+		mergeSourceArray = mergeSources.split(";");
+		mergeTargetArray = mergeTargets.split(";");
+
+		if (mergeSourceArray.length != mergeTargetArray.length) {
+			getLogger().error("The number of 'fromPaths' must match the number of 'toPaths'.");
+			return false;
+		}
+		return true;
+	}
+
+	@SuppressWarnings("unchecked")
 	private void doMain(String[] args) {
 		if (!handleArgs(args)) {
 			return;
 		}
 
-		SVNClientManager clientManager = SVNClientManager.newInstance();
-		if (user != null && pass != null) {
-			clientManager.setAuthenticationManager(BasicAuthenticationManager.newInstance(user, pass.toCharArray()));
-		}
-
-		Pattern ignoreRegexPattern = null;
-		if (StringUtils.isNotBlank(ignoreRegex)) {
-			ignoreRegexPattern = Pattern.compile(ignoreRegex);
-		}
-		final Pattern finalIgnorePattern = ignoreRegexPattern;
-
+		SVNClientManager clientManager = createClientManager();
+		List<Predicate<SVNLogEntry>> logEntryValidators = getValidators();
 		OutputStream out = null;
+
 		try {
+			boolean startedSerializing = false;
 			out = new FileOutputStream(outputFile);
 			SVNXMLSerializer xmlSerializer = new SVNXMLSerializer(out);
-			final long now = System.currentTimeMillis();
-			final long quietTimeMillis = quietTime * 1000l * 60l;
-			final List<String> users = new ArrayList<String>();
-
-			boolean started = false;
-
 			for (int i = 0; i < mergeSourceArray.length; i++) {
 				String mergeTargetPath = mergeTargetArray[i];
 				String mergeSourcePath = mergeSourceArray[i];
@@ -99,57 +133,22 @@ public class MissingMergeChecker extends AbstractMergeWorker {
 				SVNURL mergeTarget = baseSVNURL.appendPath(mergeTargetPath, false);
 				SVNURL mergeSource = baseSVNURL.appendPath(mergeSourcePath, false);
 
-				final TrackableXMLLogHandler xmlLogHandler = new TrackableXMLLogHandler(xmlSerializer, mergeTargetPath, mergeSourcePath, started);
-
-				SvnLogMergeInfo mergeInfo = clientManager.getDiffClient().getOperationsFactory().createLogMergeInfo();
-				mergeInfo.addTarget(SvnTarget.fromURL(mergeTarget, SVNRevision.HEAD));
-				mergeInfo.setSource(SvnTarget.fromURL(mergeSource, SVNRevision.HEAD));
-				mergeInfo.setDiscoverChangedPaths(true);
-				mergeInfo.setRevisionProperties(null);
-				mergeInfo.setFindMerged(false);
-				mergeInfo.setDepth(SVNDepth.INFINITY);
-				mergeInfo.setReceiver(new ISvnObjectReceiver<SVNLogEntry>() {
-
-					public void receive(SvnTarget target, SVNLogEntry logEntry) throws SVNException {
-						if (quietTime != 0) {
-							long difference = now - logEntry.getDate().getTime();
-							if (difference < quietTimeMillis) {
-								if (verbose) {
-									LOGGER.info("Ignoring revision {} as it was committed in the past {} minutes", logEntry.getRevision(), quietTime);
-								}
-								return;
-							}
-						}
-						if (finalIgnorePattern != null) {
-							if (finalIgnorePattern.matcher(logEntry.getMessage()).matches()) {
-								if (verbose) {
-									LOGGER.info("Ignoring revision {} as the regular expression matches it.", logEntry.getRevision());
-								}
-								return;
-							}
-						}
-
-						if (verbose) {
-							LOGGER.info("Missing Merge: r{}: {}: {}: {}", logEntry.getRevision(), logEntry.getAuthor(), logEntry.getMessage(), logEntry.getDate());
-						}
-						xmlLogHandler.handleLogEntry(logEntry);
-						users.add(logEntry.getAuthor());
-					}
-				});
-
-				mergeInfo.run();
-				started |= xmlLogHandler.started();
-				LOGGER.info("{} revisions have not been merged from '{}' to '{}'.", xmlLogHandler.numberOfRevisions(), mergeSourcePath, mergeTargetPath);
-
-				if (i == mergeSourceArray.length - 1) {
-					xmlLogHandler.endDocument();
+				MissingMergeWorker worker = new MissingMergeWorker(mergeSource, mergeTarget, verbose, clientManager, logEntryValidators.toArray(new Predicate[0]));
+				List<SVNLogEntry> missingMerges = worker.getMissingMerges();
+				BranchAwareXMLLogHandler handler = new BranchAwareXMLLogHandler(xmlSerializer, mergeTargetPath, mergeSourcePath, startedSerializing);
+				for (SVNLogEntry entry : missingMerges) {
+					handler.handleLogEntry(entry);
 				}
+				startedSerializing = handler.started();
 			}
-			xmlSerializer.flush();
+			if (startedSerializing) {
+				xmlSerializer.endDocument();
+				xmlSerializer.flush();
+			}
 
-			if (outputAsHTML && outputFile != null) {
+			if (outputAsHTML) {
 				File outputHTMLFile = new File(outputFile.getAbsolutePath() + ".html");
-				if (started) {
+				if (startedSerializing) {
 					Result xmlOutput = new StreamResult(outputHTMLFile);
 
 					Source xmlInput = new StreamSource(outputFile);
@@ -173,14 +172,12 @@ public class MissingMergeChecker extends AbstractMergeWorker {
 				}
 			}
 
-		} catch (FileNotFoundException e) {
-			LOGGER.error("Could not open file '{}' for reading.", outputFile.getAbsolutePath(), e);
 		} catch (SVNException e) {
-			LOGGER.error("SVN error encountered", e);
-		} catch (IOException e) {
-			LOGGER.error("Error writing output", e);
+			LOGGER.error("Error checking merge information", e);
+		} catch (SAXException | IOException e) {
+			LOGGER.error("Error writing merge information to file", e);
 		} catch (TransformerException e) {
-			LOGGER.error("Error transforming xml to html", e);
+			LOGGER.error("Error transforming merge output xml to html", e);
 		} finally {
 			if (out != null) {
 				try {
@@ -192,59 +189,27 @@ public class MissingMergeChecker extends AbstractMergeWorker {
 
 	}
 
+	private SVNClientManager createClientManager() {
+		SVNClientManager clientManager = SVNClientManager.newInstance();
+		if (user != null && pass != null) {
+			clientManager.setAuthenticationManager(BasicAuthenticationManager.newInstance(user, pass.toCharArray()));
+		}
+		return clientManager;
+	}
+
+	private List<Predicate<SVNLogEntry>> getValidators() {
+		List<Predicate<SVNLogEntry>> logEntryValidators = new ArrayList<>();
+		if (StringUtils.isNotBlank(ignoreRegex)) {
+			logEntryValidators.add(new IgnoreRegexMergeCheckerPredicate(ignoreRegex, verbose));
+		}
+		if (quietTime > 0) {
+			logEntryValidators.add(new QuietTimeMergeCheckerPredicate(quietTime * 1000, verbose));
+		}
+		return logEntryValidators;
+	}
+
 	@Override
 	protected Logger getLogger() {
 		return LOGGER;
-	}
-
-	/**
-	 * Extending the base SVNXMLLogHandler allows us to include multiple merge source and targets in the same output
-	 * file. This is useful for teams wishing to track multiple branches at the same time.
-	 * 
-	 * @author Beirti
-	 *
-	 */
-	private class TrackableXMLLogHandler extends SVNXMLLogHandler {
-
-		private String	mergeTargetPath;
-		private String	mergeSourcePath;
-		private boolean	started;
-		private int		numberOfRevisions	= 0;
-
-		public TrackableXMLLogHandler(ContentHandler contentHandler, String mergeTargetPath, String mergeSourcePath, boolean started) {
-			super(contentHandler);
-			this.mergeTargetPath = mergeTargetPath;
-			this.mergeSourcePath = mergeSourcePath;
-			this.started = started;
-		}
-
-		@Override
-		public void handleLogEntry(SVNLogEntry arg0) throws SVNException {
-			if (!started) {
-				startDocument();
-				started = true;
-			}
-			numberOfRevisions++;
-			addAttribute("mergeSource", mergeSourcePath);
-			addAttribute("mergeTarget", mergeTargetPath);
-			super.handleLogEntry(arg0);
-		}
-
-		/**
-		 * 
-		 * @return the count of revisions which have been handled.
-		 */
-		public int numberOfRevisions() {
-			return numberOfRevisions;
-		}
-
-		/**
-		 * 
-		 * @return true if at least one revision has been handled.
-		 */
-		public boolean started() {
-			return started;
-		}
-
 	}
 }

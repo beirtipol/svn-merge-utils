@@ -1,11 +1,19 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project
+	xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.beirtipol</groupId>
 	<artifactId>svn-merge-utils</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>SVN Utilities</name>
+	<name>SVN Merge Utilities</name>
 	<description>Provides functionality for assisting in Subversion Merge Tracking</description>
+
+	<properties>
+		<java.version>1.8</java.version>
+		<slf4j.version>1.7.21</slf4j.version>
+		<log4j2.version>2.5</log4j2.version>
+	</properties>
 
 	<build>
 		<plugins>
@@ -13,9 +21,9 @@
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
-					<compilerVersion>1.8</compilerVersion>
-					<source>1.8</source>
-					<target>1.8</target>
+					<compilerVersion>${java.version}</compilerVersion>
+					<source>${java.version}</source>
+					<target>${java.version}</target>
 				</configuration>
 			</plugin>
 		</plugins>
@@ -24,19 +32,24 @@
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
+				<groupId>org.slf4j</groupId>
+				<artifactId>slf4j-api</artifactId>
+				<version>${slf4j.version}</version>
+			</dependency>
+			<dependency>
 				<groupId>org.apache.logging.log4j</groupId>
 				<artifactId>log4j-slf4j-impl</artifactId>
-				<version>2.3</version>
+				<version>${log4j2.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.apache.logging.log4j</groupId>
 				<artifactId>log4j-api</artifactId>
-				<version>2.3</version>
+				<version>${log4j2.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>org.apache.logging.log4j</groupId>
 				<artifactId>log4j-core</artifactId>
-				<version>2.3</version>
+				<version>${log4j2.version}</version>
 			</dependency>
 			<dependency>
 				<groupId>net.sf.saxon</groupId>
