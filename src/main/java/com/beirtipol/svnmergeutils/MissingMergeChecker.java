@@ -100,7 +100,9 @@ public class MissingMergeChecker extends AbstractWorker {
 	}
 
 	protected boolean handleArgs(String[] args) {
-		super.handleArgs(args);
+		if (!super.handleArgs(args)) {
+			return false;
+		}
 
 		mergeSourceArray = mergeSources.split(";");
 		mergeTargetArray = mergeTargets.split(";");
